@@ -60,6 +60,15 @@
             >
               {{ action }}
             </button>
+            <button
+              v-if="meta.key === 'golden_publish'"
+              class="link"
+              type="button"
+              :data-testid="`continuation-open-${row.id}`"
+              @click="openContinuation(row)"
+            >
+              续派明细
+            </button>
           </td>
         </tr>
         <tr v-if="!rows.length">
@@ -86,6 +95,13 @@
       </form>
     </div>
 
+    <ContinuationPanel
+      v-if="continuationDetail"
+      :detail="continuationDetail"
+      @close="continuationDetail = null"
+      @changed="reload"
+    />
+
     <footer class="page-foot">
       <span>共 {{ total }} 条{{ meta.name }}记录</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
@@ -103,6 +119,9 @@ import {
   moduleMeta,
   runAction as applyAction,
 } from '@/api/backend-service'
+import ContinuationPanel from '@/domain/ContinuationPanel.vue'
+import { fetchContinuation } from '@/domain/golden_publish-api'
+import type { ContinuationDetail } from '@/domain/golden_publish'
 import type { EntryRow } from '@/data/types'
 
 const props = defineProps<{ moduleKey: string }>()
@@ -115,6 +134,7 @@ const filterFields = meta.fields.slice(0, 3)
 const showCreate = ref(false)
 const creating = ref(false)
 const createValues = ref<Record<string, string>>({})
+const continuationDetail = ref<ContinuationDetail | null>(null)
 const stats = computed(() => [
   { label: meta.metrics[0], value: total.value },
   { label: meta.metrics[1], value: rows.value.filter((row) => row.status === meta.statuses[1]).length },
@@ -171,8 +191,28 @@ async function runAction(action: string, row: EntryRow) {
     const result = await applyAction(meta.key, Number(row.id), action)
     if (!result.ok) throw new Error(result.message)
     await reload()
+    if (continuationDetail.value && continuationDetail.value.publish_id === Number(row.id)) {
+      await refreshContinuation(Number(row.id))
+    }
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '操作失败'
+  }
+}
+
+async function openContinuation(row: EntryRow) {
+  errorMessage.value = ''
+  try {
+    continuationDetail.value = await fetchContinuation(Number(row.id))
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '续派明细读取失败'
+  }
+}
+
+async function refreshContinuation(id: number) {
+  try {
+    continuationDetail.value = await fetchContinuation(id)
+  } catch {
+    // 明细刷新失败不阻断列表操作，保留当前明细
   }
 }
 

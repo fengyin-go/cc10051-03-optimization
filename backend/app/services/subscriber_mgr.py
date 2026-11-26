@@ -71,22 +71,52 @@ class SubscriberMgrService(BaseModuleService):
                 if p.get("status") == "已发布" and entity in str(p.get("实体编码", ""))]
 
     def produce_dist_batch(self, entry_id: int, version: str) -> int:
-        """为订阅方生成分发批次，写入 dist_task。"""
+        """为订阅方生成分发批次，写入 dist_task。
+
+        与发布端共用去重口径：同一发布版本对同一订阅方最多一份有效分发，
+        已存在有效批次时返回原批次 id，不重复建单；订阅实体与发布实体
+        不一致时拒绝生成，其他实体的收件方不得混入。
+        """
         entry = store.find(self.MODULE, entry_id)
         if entry is None:
             return 0
+        publish = next((p for p in store.rows("golden_publish")
+                        if p.get("版本标识") == version), None)
+        if publish is not None and str(entry.get("订阅实体", "")).strip() != str(
+            publish.get("实体编码", ""),
+        ).strip():
+            return 0
         tasks = store.rows("dist_task")
+        subscriber = str(entry.get("订阅方标识", ""))
+        if publish is not None:
+            publish_id = int(publish.get("id", 0))
+            for existing in tasks:
+                if (
+                    int(existing.get("发布批次id", 0) or 0) == publish_id
+                    and existing.get("订阅方") == subscriber
+                    and existing.get("status") in ("排队中", "分发中", "已送达")
+                    and not existing.get("作废")
+                ):
+                    return int(existing.get("id", 0))
         task_id = max((int(r.get("id", 0)) for r in tasks), default=0) + 1
         tasks.append({
             "id": task_id,
             "分发批次": f"dist-{entry.get('订阅方标识')}-{task_id}",
-            "订阅方": entry.get("订阅方标识", ""),
+            "订阅方": subscriber,
             "记录范围": f"版本 {version}",
             "分发状态": "排队中",
             "回执状态": "未回收",
             "status": "排队中",
             "pending": True,
             "abnormal": False,
+            "发布批次id": int(publish.get("id", 0)) if publish else 0,
+            "发布批次": publish.get("发布批次", "") if publish else "",
+            "版本标识": version,
+            "实体编码": publish.get("实体编码", entry.get("订阅实体", "")) if publish else entry.get("订阅实体", ""),
+            "尝试次数": 1,
+            "作废": False,
+            "送达确认方": "",
+            "送达时间": "",
         })
         return task_id
 
